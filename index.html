@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0a1229">
+  <meta name="color-scheme" content="dark">
+  <title>Jardín</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600&family=Fraunces:ital,opsz,wght,SOFT@0,9..144,300..700,0..100;1,9..144,300..700,0..100&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<main class="stage" id="stage">
+  <div class="sky" aria-hidden="true"></div>
+  <div class="stars" id="stars" aria-hidden="true"></div>
+  <div class="glow" aria-hidden="true"></div>
+  <canvas class="garden" id="garden" aria-hidden="true"></canvas>
+
+  <div class="photos" id="photos"></div>
+
+  <section class="textzone" id="textzone" aria-live="polite" aria-atomic="true"></section>
+
+  <aside class="player" id="player" aria-label="Reproductor">
+    <div class="player__cover" id="playerCover">
+      <div class="disc"><img alt="" id="playerImg"></div>
+    </div>
+    <div class="player__meta">
+      <div class="player__title" id="playerTitle"><span></span></div>
+      <div class="player__artist" id="playerArtist"></div>
+    </div>
+    <div class="eq" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+    <button class="btn-play" id="btnPlay" type="button" aria-label="Pausar">
+      <svg class="i-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h3.4v14H7zM13.6 5H17v14h-3.4z"/></svg>
+      <svg class="i-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.2v13.6a.6.6 0 0 0 .9.5l11-6.8a.6.6 0 0 0 0-1L8.9 4.7a.6.6 0 0 0-.9.5z"/></svg>
+      <svg class="i-replay" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5V2.5L7.6 6.2 12 9.9V7.4a5.6 5.6 0 1 1-5.6 5.6H4.2A7.8 7.8 0 1 0 12 5z"/></svg>
+      <span class="lbl" id="btnLbl"></span>
+    </button>
+    <p class="player__hint" id="playerHint"></p>
+    <div class="progress" aria-hidden="true"><span id="bar"></span></div>
+  </aside>
+
+
+  <div class="intro" id="intro">
+    <div class="intro__inner">
+      <div class="intro__disc" id="introDisc">
+        <div class="disc"><img alt="" id="introImg"></div>
+      </div>
+      <h1 class="intro__title" id="introTitle"></h1>
+      <p class="intro__artist" id="introArtist"></p>
+      <button class="btn-start" id="btnStart" type="button"></button>
+      <p class="intro__hint" id="introHint"></p>
+    </div>
+  </div>
+</main>
+
+<audio id="song" preload="auto"></audio>
+
+<script src="js/config.js"></script>
+<script src="js/flowers.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
