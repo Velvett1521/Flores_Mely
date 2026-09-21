@@ -292,19 +292,23 @@
 
   /* ----------------------------------------------------------------- GARDEN */
 
+  /* El jardín es un "mundo" alto. Cada semilla tiene una posición fija en él;
+     la cámara baja por el mundo y, cuando una semilla cruza la línea de
+     floración (cerca del borde inferior), brota en el siguiente latido. */
   class Garden {
     constructor(canvas) {
       this.cv = canvas;
       this.ctx = canvas.getContext('2d');
       this.sprites = buildSprites(256);
-      this.list = [];
+      this.seeds = [];
+      this.ptr = 0;          // primera semilla que aún no ha florecido
+      this.bloomed = 0;
+      this.dying = [];
       this.time = 0;
+      this.cam = 0;
+      this.frozenCam = 0;
       this.w = 0; this.h = 0; this.dpr = 1;
       this.baseR = 30;
-      this.hard = [];
-      this.soft = [];
-      this.textRect = { x: 0, y: 0, w: 0, h: 0 };
-      this.freeArea = 0;
       this.reduced = false;
       this.fade = 1;
       this.clearing = 0;
@@ -318,26 +322,7 @@
       this.baseR = clamp(Math.min(w, h * 1.3) * 0.032, 24, 46);
     }
 
-    /* hard: zonas donde NO puede haber flores (texto, reproductor).
-       soft: zonas donde se prefiere no poner flores (fotos). */
-    setZones(hard, soft, textRect) {
-      this.hard = hard;
-      this.soft = soft;
-      this.textRect = textRect;
-      let used = 0;
-      for (const r of hard) {
-        const x0 = clamp(r.x, 0, this.w), x1 = clamp(r.x + r.w, 0, this.w);
-        const y0 = clamp(r.y, 0, this.h), y1 = clamp(r.y + r.h, 0, this.h);
-        used += Math.max(0, x1 - x0) * Math.max(0, y1 - y0);
-      }
-      this.freeArea = Math.max(1, this.w * this.h - used);
-    }
-
-    /* Cuántas flores caben con la densidad pedida */
-    capacity(density, max) {
-      const r = this.baseR * 0.8;
-      return Math.min(max, Math.round(density * this.freeArea / (Math.PI * r * r)));
-    }
+    setCam(y) { this.cam = y; }
 
     inRects(rects, x, y, pad) {
       for (const r of rects) {
@@ -346,172 +331,201 @@
       return false;
     }
 
-    /* Mejor candidato: de varios puntos al azar elige el más alejado
-       de las flores existentes → el jardín se llena parejo. */
-    pickSpot(R) {
-      let best = null, bestScore = -1;
-      const m = R * 0.6;
-      for (let k = 0; k < 24; k++) {
-        const x = rand(m, this.w - m), y = rand(m, this.h - m);
-        if (this.inRects(this.hard, x, y, R * 0.85)) continue;
-        let d = 1e9;
-        for (const f of this.list) {
-          const dd = Math.hypot(f.x - x, f.y - y) - (f.R + R) * 0.55;
-          if (dd < d) d = dd;
-        }
-        if (d === 1e9) d = 200;
-        if (this.inRects(this.soft, x, y, 0)) d *= 0.6;
-        if (d > bestScore) { bestScore = d; best = { x, y }; }
+    hits(rects, x, y, w, h) {
+      for (const r of rects) {
+        if (x < r.x + r.w && x + w > r.x && y < r.y + r.h && y + h > r.y) return true;
       }
-      if (best) return best;
-      for (let k = 0; k < 200; k++) {
-        const x = rand(m, this.w - m), y = rand(m, this.h - m);
-        if (!this.inRects(this.hard, x, y, R * 0.85)) return { x, y };
-      }
-      return null;
+      return false;
     }
 
-    make() {
+    makeSeed(x, y) {
       const type = pickType();
       const z = Math.random();
       const R = this.baseR * type.mul * (0.72 + z * 0.5) * rand(0.88, 1.14);
-      const spot = this.pickSpot(R);
-      if (!spot) return null;
-      const { x, y } = spot;
-
-      // Los tallos salen del borde más cercano sin cruzar el texto
-      const t = this.textRect;
-      let edge;
-      if (y < t.y) edge = 'top';
-      else if (y > t.y + t.h) edge = 'bottom';
-      else edge = y < this.h / 2 ? 'top' : 'bottom';
-
-      const by = edge === 'top' ? -14 : this.h + 14;
-      const bx = x + rand(-1, 1) * R * 0.6;
-      const len = Math.abs(y - by);
-      const s = Math.min(56, len * 0.22);
-      const cxm = t.x + t.w / 2;
-      const beside = y >= t.y && y <= t.y + t.h;
-      const dir = beside ? (x < cxm ? -1 : 1) : (Math.random() < 0.5 ? -1 : 1);
-
+      const L = R * rand(2.6, 4.6);                    // largo del tallo hacia abajo
+      const dir = Math.random() < 0.5 ? -1 : 1;
       const sprites = this.sprites[type.key];
-      const stemDur = this.reduced ? 1 : clamp(520 + len * 1.5, 700, 1700);
 
       const leaves = [];
       const nl = 1 + Math.floor(Math.random() * 3);
       for (let i = 0; i < nl; i++) {
         leaves.push({
-          t: rand(0.28, 0.82),
-          side: i % 2 ? 1 : -1,
-          ang: rand(0.7, 1.15),
-          size: Math.max(14, R * rand(0.6, 0.95)),
-          hue: rand(96, 122)
+          t: rand(0.3, 0.85), side: i % 2 ? 1 : -1, ang: rand(0.7, 1.15),
+          size: Math.max(14, R * rand(0.6, 0.95)), hue: rand(96, 122)
         });
       }
+      const hue = rand(98, 118), sat = rand(38, 52), lit = 26 + z * 18;
 
       return {
-        x, y, R, z, sprite: sprites[Math.floor(Math.random() * sprites.length)],
-        bx, by,
-        c1x: dir * rand(0.3, 1) * s * (beside ? 1 : rand(-1, 1)),
-        c2x: dir * rand(0.3, 1) * s * (beside ? 1 : rand(-1, 1)),
-        p1y: by + (y - by) * 0.35,
-        p2y: by + (y - by) * 0.72,
-        stemDur,
+        x: x, y: y, R: R, z: z, L: L,
+        sprite: sprites[Math.floor(Math.random() * sprites.length)],
+        bx: rand(-0.7, 0.7) * R,
+        cx: dir * rand(0.3, 1) * R * 0.9,
+        stemDur: this.reduced ? 1 : clamp(520 + L * 2.2, 700, 1500),
         bloomDur: this.reduced ? 600 : rand(850, 1100),
         rot: rand(-0.5, 0.5),
         spin: this.reduced ? 0 : rand(0.9, 1.6) * (Math.random() < 0.5 ? -1 : 1),
         ph: rand(0, TAU),
-        swayAmp: this.reduced ? 0 : Math.min(6, 1.5 + len * 0.006),
+        swayAmp: this.reduced ? 0 : 2 + R * 0.05,
         sw: clamp(R * 0.085, 2, 5),
-        stemCol: 'hsl(' + rand(98, 118).toFixed(0) + ',' + rand(38, 52).toFixed(0) + '%,' + (26 + z * 18).toFixed(0) + '%)',
+        stemPre: 'hsla(' + hue.toFixed(0) + ',' + sat.toFixed(0) + '%,' + lit.toFixed(0) + '%,',
         alpha: 0.8 + z * 0.2,
-        leaves,
-        age: 0
+        leaves: leaves,
+        t0: Infinity,          // Infinity = todavía no florece
+        die: 0, dieT: 0
       };
     }
 
-    spawn(n, opts) {
-      const o = opts || {};
-      const gap = o.gap == null ? 95 : o.gap;
-      for (let i = 0; i < n; i++) {
-        const f = this.make();
-        if (!f) continue;
-        f.age = o.instant ? 1e6 : -(i * gap + rand(0, 60));
-        this.list.push(f);
+    /* Siembra todo el mundo con una cuadrícula con variación (reparto parejo).
+       o.hard  = zonas prohibidas (textos)         — en coordenadas del mundo
+       o.soft  = zonas que se prefiere evitar (fotos)
+       o.bloomedUpTo = si viene, las semillas por encima de esa altura ya
+                       están abiertas (se usa al cambiar el tamaño de ventana) */
+    build(o) {
+      const w = this.w;
+      const avgR = this.baseR * 0.8;
+      const density = clamp(o.density || 0.5, 0.15, 0.95);
+      let p = 0.8;
+      const cell = clamp(avgR * Math.sqrt(Math.PI * p / density), 40, 130);
+      const perScreen = (w / cell) * (this.h / cell) * p;
+      if (o.maxPerScreen && perScreen > o.maxPerScreen) p *= o.maxPerScreen / perScreen;
+
+      const cols = Math.ceil(w / cell), rows = Math.ceil(o.worldH / cell);
+      const seeds = [];
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          if (Math.random() > p) continue;
+          const x = (c + Math.random()) * cell, y = (r + Math.random()) * cell;
+          if (x > w) continue;
+          const f = this.makeSeed(x, y);
+          // caja que cubre la cabeza y todo el tallo que cuelga debajo
+          const bx0 = Math.min(f.x - f.R * 0.85, f.x + f.bx - f.sw, f.x + f.cx - f.sw);
+          const bx1 = Math.max(f.x + f.R * 0.85, f.x + f.bx + f.sw, f.x + f.cx + f.sw);
+          if (this.hits(o.hard, bx0, f.y - f.R * 0.85, bx1 - bx0, f.L + f.R * 0.85)) continue;
+          if (this.inRects(o.soft, x, y, 0) && Math.random() < 0.6) continue;
+          seeds.push(f);
+        }
       }
-      this.list.sort((a, b) => a.z - b.z);
+      seeds.sort((a, b) => a.y - b.y);
+
+      this.seeds = seeds;
+      this.dying = [];
+      this.ptr = 0; this.bloomed = 0;
+      this.fade = 1; this.clearing = 0;
+      if (o.bloomedUpTo != null) {
+        while (this.ptr < seeds.length && seeds[this.ptr].y <= o.bloomedUpTo) {
+          seeds[this.ptr].t0 = -1e9;
+          this.ptr++; this.bloomed++;
+        }
+      }
     }
 
-    clear(fadeMs) {
-      if (!fadeMs) { this.list = []; this.fade = 1; this.clearing = 0; return; }
-      this.clearing = fadeMs;
-      this.clearT = fadeMs;
+    /* Latido: abre (en cascada, de abajo hacia arriba) todas las semillas que
+       ya cruzaron la línea de floración. Devuelve cuántas abrió. */
+    bloomDue(trigY, spanMs) {
+      const lim = this.cam + trigY;
+      const seeds = this.seeds;
+      let end = this.ptr;
+      while (end < seeds.length && seeds[end].y <= lim) end++;
+      const n = end - this.ptr;
+      if (!n) return 0;
+      const gap = Math.min(95, spanMs / n);
+      for (let i = end - 1, k = 0; i >= this.ptr; i--, k++) {
+        seeds[i].t0 = this.time + k * gap + rand(0, 40);
+      }
+      this.ptr = end;
+      this.bloomed += n;
+      return n;
     }
-
-    get count() { return this.list.filter(f => !f.die).length; }
 
     /* Retira (con fundido) las flores que quedarían bajo el texto final */
     clearZone(rect, ms) {
-      for (const f of this.list) {
-        const pad = f.R * 0.5;
+      const cam = this.cam;
+      for (const f of this.seeds) {
+        if (f.t0 === Infinity) continue;
+        const sy = f.y - cam, pad = f.R * 0.5;
         if (f.x > rect.x - pad && f.x < rect.x + rect.w + pad &&
-            f.y > rect.y - pad && f.y < rect.y + rect.h + pad) {
+            sy > rect.y - pad && sy < rect.y + rect.h + pad) {
+          if (!f.die) this.dying.push(f);
           f.die = ms; f.dieT = ms;
         }
       }
     }
 
+    /* Todo el jardín se desvanece (y luego hay que volver a sembrar) */
+    clear(ms) {
+      if (!ms) { this.seeds = []; this.ptr = 0; this.bloomed = 0; this.fade = 1; this.clearing = 0; return; }
+      this.frozenCam = this.cam;
+      this.clearing = ms;
+      this.clearT = ms;
+    }
+
+    get count() { return this.bloomed; }
+
     update(dt) {
       if (!dt) return;
       this.time += dt;
-      let dying = false;
-      for (const f of this.list) {
-        f.age += dt;
-        if (f.die) { f.dieT -= dt; dying = true; }
+      if (this.dying.length) {
+        for (const f of this.dying) {
+          f.dieT -= dt;
+          if (f.dieT <= 0) f.t0 = Infinity;      // ya se fue: deja de dibujarse
+        }
+        this.dying = this.dying.filter(f => f.dieT > 0);
       }
-      if (dying) this.list = this.list.filter(f => !f.die || f.dieT > 0);
       if (this.clearing) {
         this.clearT -= dt;
         this.fade = Math.max(0, this.clearT / this.clearing);
-        if (this.clearT <= 0) { this.list = []; this.fade = 1; this.clearing = 0; }
+        if (this.clearT <= 0) { this.seeds = []; this.ptr = 0; this.bloomed = 0; this.fade = 1; this.clearing = 0; }
       }
     }
 
     draw() {
-      const g = this.ctx, dpr = this.dpr, T = this.time;
+      const g = this.ctx, dpr = this.dpr, T = this.time, h = this.h;
+      const cam = this.clearing ? this.frozenCam : this.cam;
       g.setTransform(dpr, 0, 0, dpr, 0, 0);
-      g.clearRect(0, 0, this.w, this.h);
+      g.clearRect(0, 0, this.w, h);
+      const seeds = this.seeds;
+      if (!seeds.length) return;
       g.lineCap = 'round';
       g.lineJoin = 'round';
 
-      for (const f of this.list) {
-        if (f.age <= 0) continue;
-        const fk = this.fade * (f.die ? clamp(f.dieT / f.die, 0, 1) : 1);
+      // solo se dibuja lo que cae en pantalla (las semillas están ordenadas por altura)
+      const yMin = cam - 340, yMax = cam + h + 80;
+      let lo = 0, hi = seeds.length;
+      while (lo < hi) { const m = (lo + hi) >> 1; if (seeds[m].y < yMin) lo = m + 1; else hi = m; }
 
-        const gs = f.stemDur > 1 ? easeOutCubic(clamp(f.age / f.stemDur, 0, 1)) : 1;
+      for (let i = lo; i < seeds.length; i++) {
+        const f = seeds[i];
+        if (f.y > yMax) break;
+        const age = T - f.t0;
+        if (!(age > 0)) continue;
+
+        const sy = f.y - cam;
+        const fk = this.fade * (f.die ? clamp(f.dieT / f.die, 0, 1) : 1);
+        const gs = f.stemDur > 1 ? easeOutCubic(clamp(age / f.stemDur, 0, 1)) : 1;
         const sway = f.swayAmp ? Math.sin(T * 0.0009 + f.ph) * f.swayAmp * gs : 0;
 
-        // puntos de control del tallo (con balanceo)
-        const p0x = f.bx, p0y = f.by;
-        const p1x = f.bx + f.c1x + sway * 0.15, p1y = f.p1y;
-        const p2x = f.x + f.c2x + sway * 0.6,   p2y = f.p2y;
-        const p3x = f.x + sway,                 p3y = f.y;
-
+        // tallo: sale de abajo (se desvanece hacia la base) y sube hasta la flor
+        const p0x = f.x + f.bx,                p0y = sy + f.L;
+        const p1x = f.x + f.cx + sway * 0.5,   p1y = sy + f.L * 0.5;
+        const p2x = f.x + sway,                p2y = sy;
         const bez = (s) => {
-          const m = 1 - s, a = m * m * m, b = 3 * m * m * s, c = 3 * m * s * s, d = s * s * s;
-          return [a * p0x + b * p1x + c * p2x + d * p3x, a * p0y + b * p1y + c * p2y + d * p3y];
+          const m = 1 - s;
+          return [m * m * p0x + 2 * m * s * p1x + s * s * p2x, m * m * p0y + 2 * m * s * p1y + s * s * p2y];
         };
 
         g.globalAlpha = f.alpha * fk;
-
-        // tallo
-        const N = Math.max(3, Math.ceil(gs * 18));
-        g.strokeStyle = f.stemCol;
+        const grad = g.createLinearGradient(p0x, p0y, p2x, p2y);
+        grad.addColorStop(0, f.stemPre + '0)');
+        grad.addColorStop(0.32, f.stemPre + '.92)');
+        grad.addColorStop(1, f.stemPre + '1)');
+        g.strokeStyle = grad;
         g.lineWidth = f.sw;
+        const N = Math.max(3, Math.ceil(gs * 16));
         g.beginPath();
         g.moveTo(p0x, p0y);
-        for (let i = 1; i <= N; i++) {
-          const q = bez(gs * i / N);
+        for (let k = 1; k <= N; k++) {
+          const q = bez(gs * k / N);
           g.lineTo(q[0], q[1]);
         }
         g.stroke();
@@ -520,8 +534,9 @@
         for (const L of f.leaves) {
           const lp = clamp((gs - L.t) / 0.22, 0, 1);
           if (lp <= 0) continue;
-          const a = bez(L.t), b = bez(Math.min(1, L.t + 0.02));
-          const th = Math.atan2(b[1] - a[1], b[0] - a[0]);
+          const a = bez(L.t), b2 = bez(Math.min(1, L.t + 0.02));
+          const th = Math.atan2(b2[1] - a[1], b2[0] - a[0]);
+          g.globalAlpha = f.alpha * fk * Math.min(1, L.t * 1.7);
           g.save();
           g.translate(a[0], a[1]);
           g.rotate(th + L.side * L.ang);
@@ -541,7 +556,7 @@
         // capullo → flor
         const tip = bez(gs);
         const bloomStart = f.stemDur * 0.82;
-        const b = clamp((f.age - bloomStart) / f.bloomDur, 0, 1);
+        const b = clamp((age - bloomStart) / f.bloomDur, 0, 1);
 
         if (gs > 0.55 && b < 0.3) {
           const br = f.R * 0.2 * clamp((gs - 0.55) / 0.45, 0, 1) * (1 - b / 0.3);
@@ -563,12 +578,12 @@
             g.globalAlpha = (1 - pr) * 0.42 * fk;
             g.strokeStyle = '#ffe07a';
             g.lineWidth = 2;
-            g.beginPath(); g.arc(p3x, p3y, f.R * (0.5 + pr * 1.15), 0, TAU); g.stroke();
+            g.beginPath(); g.arc(p2x, p2y, f.R * (0.5 + pr * 1.15), 0, TAU); g.stroke();
           }
 
           g.globalAlpha = f.alpha * Math.min(1, b * 4) * fk;
           g.save();
-          g.translate(p3x, p3y);
+          g.translate(p2x, p2y);
           g.rotate(rot);
           g.drawImage(f.sprite, -d / 2, -d / 2, d, d);
           g.restore();

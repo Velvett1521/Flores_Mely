@@ -25,8 +25,8 @@ window.CONFIG = {
     "Aunque llevamos poco tiempo de conocernos te has ganado un lugar muy especial en mi vida.",
     "He aprendido bastante de ti, de tus gustos, de tu forma de pensar y otras cosas más.",
     "Tambien aprendí que sientes mucho las cosas y que te afectan bastante, y que a veces no tienes a alguien con quien compartir tus sentimientos.",
-    "Quiero que sepas que aunque no lo parezca, puedes confiar en mí, cada vez que me necesites ahi voy a estar.",
-    "Y que no olvides que vales mucho y que lo más importante es que tu estés feliz.",
+    "Quiero que sepas que aunque no lo parezca, puedes confiar en mí, cada vez que me necesites ahí voy a estar.",
+    "Y que no olvides que vales mucho y que lo más importante es que tú estés feliz.",
     "Gracias por tu amistad Mely... y por ser mi complice en algo que para mi era tan importante.",
     "Espero poder estar ahí cada vez que me necesites porque para mi tú eres..."
   ],

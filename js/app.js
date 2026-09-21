@@ -13,6 +13,7 @@
   const speed = parseFloat(new URLSearchParams(location.search).get('speed')) || 1;
 
   const stage = $('stage'), textzone = $('textzone'), photosEl = $('photos');
+  const world = $('world'), worldwrap = $('worldwrap'), sky = $('sky'), starsEl = $('stars');
   const player = $('player'), playerCover = $('playerCover');
   const intro = $('intro'), introDisc = $('introDisc');
   const btnPlay = $('btnPlay'), btnStart = $('btnStart'), bar = $('bar');
@@ -75,27 +76,11 @@
   setImg($('introImg'), cfg.song.cover, coverFallback);
   setImg($('playerImg'), cfg.song.cover, coverFallback);
 
-  /* Estrellas del cielo */
-  (function stars() {
-    const el = $('stars');
-    const n = window.innerWidth < 640 ? 28 : 46;
-    for (let i = 0; i < n; i++) {
-      const s = document.createElement('i');
-      s.className = 'star';
-      const sz = rand(1, 2.4);
-      s.style.cssText =
-        'left:' + rand(0, 100).toFixed(1) + '%;top:' + rand(0, 58).toFixed(1) + '%;' +
-        'width:' + sz.toFixed(1) + 'px;height:' + sz.toFixed(1) + 'px;' +
-        '--d:' + rand(3, 7).toFixed(1) + 's;--dl:-' + rand(0, 6).toFixed(1) + 's';
-      el.appendChild(s);
-    }
-  })();
-
-  /* Fotos (máximo 6 espacios) */
-  const photoEls = [];
-  (cfg.images || []).slice(0, 6).forEach(function (im, i) {
+  /* Fotos (máximo 6): una copia viaja por el mundo y otra (la que se puede
+     arrastrar) llega al final */
+  function makePhoto(im, i, cls) {
     const fig = document.createElement('figure');
-    fig.className = 'photo slot-' + i;
+    fig.className = 'photo ' + cls;
     fig.style.setProperty('--k', i);
     const fr = document.createElement('div');
     fr.className = 'frame';
@@ -109,8 +94,23 @@
     cap.textContent = im.caption || '';
     fr.append(tape, img, cap);
     fig.appendChild(fr);
-    photosEl.appendChild(fig);
-    photoEls.push(fig);
+    return fig;
+  }
+
+  const photoEls = [], worldPhotos = [];
+  (cfg.images || []).slice(0, 6).forEach(function (im, i) {
+    const fin = makePhoto(im, i, 'slot-' + i);
+    photosEl.appendChild(fin);
+    photoEls.push(fin);
+
+    const wp = makePhoto(im, i, 'wp');
+    wp.style.setProperty('--r', [-5, 4, 3.5, -4, -3, 5][i % 6] + 'deg');
+    wp.style.setProperty('--tr', (i % 2 ? 3 : -4) + 'deg');
+    wp.style.setProperty('--fx', '0px');
+    wp.style.setProperty('--fy', '60px');
+    wp.style.setProperty('--fr', (i % 2 ? 8 : -8) + 'deg');
+    world.appendChild(wp);
+    worldPhotos.push(wp);
   });
 
   const imgSteps = (Array.isArray(cfg.imageSteps) && cfg.imageSteps.length)
@@ -154,6 +154,7 @@
   let audioOK = true, audioDur = 0;
   audio.loop = cfg.song.loop !== false;
   audio.addEventListener('error', function () { audioOK = false; });
+  audio.addEventListener('ended', function () { if (S.finished) songEnded(); });
   audio.addEventListener('loadedmetadata', function () {
     audioDur = isFinite(audio.duration) ? audio.duration : 0;
     calcTiming();
@@ -213,55 +214,196 @@
   }
   calcTiming();
 
-  /* --------------------------------------------------------------- jardín */
+  /* --------------------------------------------------------------- estado */
+
+  const S = {
+    started: false, playing: true, finished: false,
+    t: 0, step: -1, pulse: -1, timer: 0, timer2: 0, timer3: 0, ended: false
+  };
+  const running = function () { return S.started && S.playing && !S.finished; };
+
+  /* ------------------------------------------------------ palabras animadas */
+
+  function fillWords(p, text) {
+    const words = text.split(/\s+/).filter(Boolean);
+    p.style.setProperty('--gap', Math.min(70, 1300 / Math.max(1, words.length)).toFixed(0) + 'ms');
+    words.forEach(function (wd, i) {
+      const sp = document.createElement('span');
+      sp.className = 'w';
+      sp.style.setProperty('--i', i);
+      sp.textContent = wd;
+      p.appendChild(sp);
+      if (i < words.length - 1) p.appendChild(document.createTextNode(' '));
+    });
+  }
+
+  const worldTexts = [], wIn = [], pIn = [];
+  texts.forEach(function (tx) {
+    const p = document.createElement('p');
+    p.className = 'line wl';
+    fillWords(p, tx);
+    world.appendChild(p);
+    worldTexts.push(p);
+  });
+
+  /* --------------------------------------------------- mundo y cámara */
 
   const garden = new window.Garden($('garden'));
   garden.reduced = reduce;
   let dims = { w: 0, h: 0 };
-  let target = 0;
+
+  const portraitMQ = window.matchMedia('(max-aspect-ratio: 4/5), (max-width: 640px)');
+  const DECEL = 0.8;   // el último tramo frena suave hasta detenerse (en pasos)
+  const W = { S: 0, y0: 0, camEnd: 0, trig: 0, fin: { cy: 0, th: 0 }, photoY: [] };
+
+  /* Pregunta al CSS dónde quedará el texto del final, para que el
+     recorrido termine exactamente ahí */
+  function probeFinale() {
+    const st = document.createElement('div');
+    st.className = 'stage is-finale';
+    st.style.cssText = 'position:fixed;inset:0;visibility:hidden;pointer-events:none;';
+    const tz = document.createElement('section');
+    tz.className = 'textzone';
+    st.appendChild(tz);
+    document.body.appendChild(st);
+    const cs = getComputedStyle(tz);
+    const r = { cy: parseFloat(cs.top) || 0, th: parseFloat(cs.height) || 0 };
+    st.remove();
+    return r;
+  }
+
+  /* Posición de la cámara según el tiempo: velocidad constante y, al final,
+     frena suavemente para dejar el último texto en su sitio */
+  function camAt(t) {
+    if (!(t > 0) || !W.camEnd) return 0;
+    const total = N * stepMs, Td = DECEL * stepMs, v = W.S / stepMs;
+    if (t >= total) return W.camEnd;
+    if (t <= total - Td) return v * t;
+    const u = (t - (total - Td)) / Td;
+    return v * (total - Td) + v * Td * (u - u * u / 2);
+  }
+
+  function buildStars(h, travel) {
+    const Hs = h + travel * 0.14;
+    starsEl.style.height = Hs + 'px';
+    starsEl.textContent = '';
+    const n = Math.round((window.innerWidth < 640 ? 28 : 46) * Hs / h);
+    for (let i = 0; i < n; i++) {
+      const st = document.createElement('i');
+      st.className = 'star';
+      const sz = rand(1, 2.4);
+      st.style.cssText =
+        'left:' + rand(0, 100).toFixed(1) + '%;top:' + rand(0, Hs * 0.9).toFixed(0) + 'px;' +
+        'width:' + sz.toFixed(1) + 'px;height:' + sz.toFixed(1) + 'px;' +
+        '--d:' + rand(3, 7).toFixed(1) + 's;--dl:-' + rand(0, 6).toFixed(1) + 's';
+      starsEl.appendChild(st);
+    }
+  }
+
+  /* Coloca textos y fotos a lo largo del mundo y siembra las flores */
+  function buildWorld() {
+    const w = stage.clientWidth, h = stage.clientHeight;
+    if (!w || !h) return;
+    const mobile = portraitMQ.matches;
+    garden.resize(w, h, Math.min(window.devicePixelRatio || 1, 2));
+
+    const fin = probeFinale();
+    const tw = textzone.offsetWidth;
+    W.fin = fin;
+    W.S = mobile ? clamp(h * 0.5, 300, 520) : clamp(h * 0.58, 320, 640);      // separación entre textos
+    W.camEnd = W.S * (N - 0.5 * DECEL);                                       // recorrido total
+    W.y0 = W.S * (1 - 0.5 * DECEL) + fin.cy;                                  // dónde empieza el 1.er texto
+    W.trig = h * 0.9;                                                         // línea donde brotan las flores
+
+    const hard = [];
+    worldTexts.forEach(function (el, i) {
+      const yc = W.y0 + i * W.S;
+      el.style.setProperty('--tzw', tw + 'px');
+      el.style.top = yc + 'px';
+      const hi = el.offsetHeight;
+      hard.push({ x: w / 2 - tw / 2 - 24, y: yc - hi / 2 - 24, w: tw + 48, h: hi + 48 });
+    });
+
+    // fotos: en escritorio al lado del texto; en celular entre un texto y el siguiente
+    const soft = [], used = {};
+    W.photoY = [];
+    worldPhotos.forEach(function (el, k) {
+      const i = clamp(imgSteps[k] | 0, 0, N - 1);
+      const ph = el.offsetHeight, pw = el.offsetWidth;
+      const left = k % 2 === 0;
+      const key = (left ? 'L' : 'R') + i;
+      used[key] = (used[key] || 0) + 1;
+      let yc;
+      if (mobile) yc = W.y0 + i * W.S + (i < N - 1 ? W.S / 2 : -W.S / 2);
+      else yc = W.y0 + i * W.S + (((k * 37) % 5) - 2) * h * 0.04;
+      yc += (used[key] - 1) * (ph + 24);
+      const m = w * (0.04 + ((k * 53) % 7) / 7 * 0.05);
+      const x = left ? m : w - m - pw;
+      el.style.left = x + 'px';
+      el.style.top = (yc - ph / 2) + 'px';
+      W.photoY[k] = yc;
+      soft.push({ x: x, y: yc - ph / 2, w: pw, h: ph });
+    });
+
+    buildStars(h, W.camEnd);
+
+    garden.build({
+      worldH: W.camEnd + h + 60,
+      hard: hard, soft: soft,
+      density: cfg.garden.density,
+      maxPerScreen: cfg.garden.maxFlowers,
+      bloomedUpTo: S.pulse >= 0 ? camAt(S.t) + W.trig : null   // si ya iba avanzando, lo anterior queda abierto
+    });
+    if (S.finished) setTimeout(clearBehindFinale, 500);
+  }
 
   function layout(force) {
     const w = stage.clientWidth, h = stage.clientHeight;
     if (!w || !h) return;
     const dw = Math.abs(w - dims.w), dh = Math.abs(h - dims.h);
     if (!force && dw < 1 && dh < 1) return;
-    const rebuild = dims.w > 0 && (dw >= 1 || dh > 140);
+    const rebuild = force || dims.w === 0 || dw >= 1 || dh > 140;
     dims = { w: w, h: h };
-
-    garden.resize(w, h, Math.min(window.devicePixelRatio || 1, 2));
-
-    const sr = stage.getBoundingClientRect();
-    const box = function (el, pad) {
-      const r = el.getBoundingClientRect();
-      return { x: r.left - sr.left - pad, y: r.top - sr.top - pad, w: r.width + pad * 2, h: r.height + pad * 2 };
-    };
-    const tz = box(textzone, 10), pl = box(player, 12);
-    const soft = photoEls.map(function (el) {
-      return { x: el.offsetLeft, y: el.offsetTop, w: el.offsetWidth, h: el.offsetHeight };
-    });
-    garden.setZones([tz, pl], soft, tz);
-    target = garden.capacity(cfg.garden.density, cfg.garden.maxFlowers);
-
-    if (rebuild && garden.count) {
-      const n = garden.count;
-      garden.clear(0);
-      garden.spawn(n, { instant: true });
-    }
+    if (rebuild) buildWorld();
+    else garden.resize(w, h, Math.min(window.devicePixelRatio || 1, 2));   // solo cambió la barra del navegador
   }
 
   let rt;
   new ResizeObserver(function () { clearTimeout(rt); rt = setTimeout(layout, 120); }).observe(stage);
   layout(true);
 
-  /* --------------------------------------------------------------- estado */
+  /* Cada cuadro: mueve el mundo, revela lo que va entrando y mueve el cielo */
+  function updateWorld(cam) {
+    world.style.transform = 'translate3d(0,' + (-cam).toFixed(2) + 'px,0)';
 
-  const S = {
-    started: false, playing: true, finished: false, songEnded: false,
-    t: 0, step: -1, pulse: -1, spawned: 0, timer: 0, timer2: 0
-  };
-  const running = function () { return S.started && S.playing && !S.finished; };
+    if (S.started && S.t >= 0 && !S.finished) {
+      const lim = dims.h * 0.86;
+      for (let i = 0; i < N; i++) {
+        if (!wIn[i] && W.y0 + i * W.S - cam < lim) { wIn[i] = 1; worldTexts[i].classList.add('in'); }
+      }
+      for (let k = 0; k < worldPhotos.length; k++) {
+        if (!pIn[k] && W.photoY[k] - cam < lim) { pIn[k] = 1; worldPhotos[k].classList.add('is-in'); }
+      }
+    }
 
-  function setLine(text) {
+    // el cielo pasa de la noche al amanecer; las estrellas se alejan más despacio
+    const prog = W.camEnd ? clamp(cam / W.camEnd, 0, 1) : 0;
+    sky.style.backgroundPositionY = (prog * 100).toFixed(2) + '%';
+    starsEl.style.transform = 'translate3d(0,' + (-cam * 0.14).toFixed(1) + 'px,0)';
+    starsEl.style.opacity = (1 - prog * 0.9).toFixed(3);
+  }
+
+  function resetWorld() {
+    worldwrap.classList.remove('is-gone');
+    worldTexts.forEach(function (el) { el.classList.remove('in'); el.style.visibility = ''; });
+    worldPhotos.forEach(function (el) { el.classList.remove('is-in'); });
+    wIn.length = 0; pIn.length = 0;
+    textzone.style.top = ''; textzone.style.height = '';
+  }
+
+  /* ------------------------------------------------------- texto del final */
+
+  function setLine(text, opts) {
     const old = textzone.querySelector('.line.in');
     if (old) {
       old.classList.remove('in');
@@ -270,21 +412,26 @@
     }
     if (!text) return;
     const p = document.createElement('p');
-    p.className = 'line';
-    const words = text.split(/\s+/).filter(Boolean);
-    p.style.setProperty('--gap', Math.min(70, 1300 / Math.max(1, words.length)).toFixed(0) + 'ms');
-    words.forEach(function (wd, i) {
-      const s = document.createElement('span');
-      s.className = 'w';
-      s.style.setProperty('--i', i);
-      s.textContent = wd;
-      p.appendChild(s);
-      if (i < words.length - 1) p.appendChild(document.createTextNode(' '));
-    });
+    p.className = 'line' + (opts && opts.instant ? ' instant' : '');
+    fillWords(p, text);
     textzone.appendChild(p);
     void p.offsetWidth;
     requestAnimationFrame(function () { p.classList.add('in'); });
   }
+
+  /* El último texto llega a su sitio en el mundo; aquí se le da el relevo al
+     bloque fijo de texto (idéntico y en la misma posición) sin que se note */
+  function handoffLastText() {
+    textzone.style.transition = 'none';
+    textzone.style.top = W.fin.cy + 'px';
+    textzone.style.height = W.fin.th + 'px';
+    setLine(texts[N - 1], { instant: true });
+    void textzone.offsetWidth;
+    textzone.style.transition = '';
+    worldTexts[N - 1].style.visibility = 'hidden';
+  }
+
+  function releaseTextzone() { textzone.style.top = ''; textzone.style.height = ''; }
 
   function beat() {
     if (reduce || !playerCover.animate) return;
@@ -294,31 +441,29 @@
     ], { duration: 900, easing: 'ease-out' });
   }
 
-  function enterStep(i) {
-    setLine(texts[i]);
-    imgSteps.forEach(function (s, k) { if (s === i && photoEls[k]) photoEls[k].classList.add('is-in'); });
-  }
-
-  /* Cada "latido": brota un grupo de flores en cascada */
-  function onPulse(p) {
-    const need = Math.max(0, target - S.spawned);
-    const left = totalPulses - p;
-    const n = left <= 1 ? need : Math.round(need / left);
-    if (n > 0) {
-      garden.spawn(n, { gap: Math.min(110, pulseMs * 0.6 / Math.max(1, n)) });
-      S.spawned += n;
-    }
-    stage.style.setProperty('--bloom', Math.min(1, S.spawned / Math.max(1, target)).toFixed(3));
+  /* Cada "latido": florecen en cascada las semillas que acaban de entrar */
+  function onPulse() {
+    garden.bloomDue(W.trig, pulseMs * 0.75);
+    stage.style.setProperty('--bloom', clamp(camAt(S.t) / Math.max(1, W.camEnd), 0, 1).toFixed(3));
     beat();
   }
 
   function advance() {
     if (S.t < 0) return;
-    const st = Math.min(N - 1, Math.floor(S.t / stepMs));
-    if (st !== S.step) { S.step = st; enterStep(st); }
     const pi = Math.min(totalPulses - 1, Math.floor(S.t / pulseMs));
-    while (S.pulse < pi) { S.pulse++; onPulse(S.pulse); }
+    while (S.pulse < pi) { S.pulse++; onPulse(); }
     if (S.t >= N * stepMs + (T.loop ? HOLD_MS : 0)) end();
+  }
+
+  /* Las fotos regresan volando desde los bordes y quedan listas para arrastrar */
+  function bringPhotosBack() {
+    photoEls.forEach(function (el, k) {
+      el.style.transitionDelay = (250 + k * 130) + 'ms';
+      el.classList.add('is-in');
+    });
+    setTimeout(function () {
+      photoEls.forEach(function (el) { el.style.transitionDelay = ''; });
+    }, 2800);
   }
 
   function end() {
@@ -327,23 +472,28 @@
     S.t = N * stepMs;
     stage.classList.remove('is-paused');
     stage.classList.add('is-finished');
-    // Si la canción sigue sonando, la tarjeta se comporta como reproductor
-    // (pausa/play) y el botón "Ver de nuevo" aparece al terminar la música.
-    if (audioOK && !audio.paused && !audio.ended) {
-      S.songEnded = false;
-      stage.classList.add('is-song-playing');
-      audio.addEventListener('ended', onSongEnded, { once: true });
-    } else {
-      onSongEnded();
-    }
+    btnPlay.setAttribute('aria-label', 'Pausar');
+
+    handoffLastText();
+    worldwrap.classList.add('is-gone');
+    bringPhotosBack();
     enterFinale();
+
+    // Si la canción sigue sonando, la tarjeta se queda como reproductor
+    // (ecualizador, barra, pausa) y "Ver de nuevo" sale hasta que termine.
+    if (audioOK && audioDur > 0 && !audio.paused && !audio.ended) {
+      audio.loop = false;          // para que llegue a su final y avise
+    } else {
+      songEnded();                 // sin audio (o ya terminó): no hay nada que esperar
+    }
   }
 
-  function onSongEnded() {
-    S.songEnded = true;
-    stage.classList.remove('is-song-playing');
+  function songEnded() {
+    if (S.ended) return;
+    S.ended = true;
+    stage.classList.remove('is-paused');
+    stage.classList.add('is-ended');
     btnPlay.setAttribute('aria-label', cfg.ui.replay);
-    S.playing = false;
   }
 
   /* ------------------------------------------------------------- final */
@@ -434,6 +584,7 @@
     S.timer2 = setTimeout(clearBehindFinale, reduce ? 200 : 1500);
     if (reduce || !playerCover.animate) {
       stage.classList.add('is-finale');
+      releaseTextzone();
       enableDrag(true);
       return;
     }
@@ -441,6 +592,7 @@
     S.timer = setTimeout(function () {
       const first = playerCover.getBoundingClientRect();
       stage.classList.add('is-finale');
+      releaseTextzone();
       player.classList.remove('is-fading');
       const last = playerCover.getBoundingClientRect();
       const dx = (first.left + first.width / 2) - (last.left + last.width / 2);
@@ -466,32 +618,34 @@
   function restart(keepAudio) {
     clearTimeout(S.timer);
     clearTimeout(S.timer2);
-    audio.removeEventListener('ended', onSongEnded);
+    clearTimeout(S.timer3);
     S.finished = false;
-    S.songEnded = false;
     S.playing = true;
-    S.step = -1; S.pulse = -1; S.spawned = 0;
+    S.step = -1; S.pulse = -1;
     S.t = -1200 * (1 / speed);
-    stage.classList.remove('is-paused', 'is-finished', 'is-song-playing');
+    stage.classList.remove('is-paused', 'is-finished', 'is-ended');
+    S.ended = false;
+    audio.loop = cfg.song.loop !== false;
     btnPlay.setAttribute('aria-label', 'Pausar');
     stage.style.setProperty('--bloom', 0);
-    garden.clear(Math.round(1000 / speed));
+    const fade = Math.round(1000 / speed);
+    garden.clear(fade);                                        // el jardín se desvanece...
+    S.timer3 = setTimeout(buildWorld, fade + 40);              // ...y se siembra uno nuevo
     setLine('');
+    resetWorld();
     photoEls.forEach(function (el) { el.classList.remove('is-in'); });
     if (!keepAudio && audioOK) { try { audio.currentTime = 0; } catch (e) {} }
     playAudio();
   }
 
   function setPlaying(v) {
-    if (!S.started) return;
-    // Durante el final con canción sonando: pausa/reanuda solo el audio.
-    if (S.finished && !S.songEnded) {
-      S.playing = v;
+    if (!S.started || S.ended) return;
+    if (S.finished) {              // tarjeta final: solo pausa o reanuda la canción
       stage.classList.toggle('is-paused', !v);
+      btnPlay.setAttribute('aria-label', v ? 'Pausar' : 'Reanudar');
       if (v) playAudio(); else audio.pause();
       return;
     }
-    if (S.finished) return;
     S.playing = v;
     stage.classList.toggle('is-paused', !v);
     btnPlay.setAttribute('aria-label', v ? 'Pausar' : 'Reanudar');
@@ -499,11 +653,10 @@
   }
 
   btnPlay.addEventListener('click', function () {
-    // Canción aún sonando tras el final → solo controla la música.
-    if (S.finished && !S.songEnded) { setPlaying(!S.playing); return; }
     if (!S.finished) { setPlaying(!S.playing); return; }
+    if (!S.ended) { setPlaying(audio.paused); return; }   // la canción sigue: pausa / reanuda
     if (stage.classList.contains('is-finale')) {
-      leaveFinale(function () { restart(false); setTimeout(function () { layout(true); }, 1100); });
+      leaveFinale(function () { restart(false); });
     } else restart(false);
   });
 
@@ -577,6 +730,9 @@
       advance();
     }
 
+    const cam = camAt(S.t);
+    garden.setCam(cam);
+    updateWorld(cam);
     garden.update(running() || S.finished ? dt : 0);
     garden.draw();
 
@@ -591,5 +747,5 @@
   requestAnimationFrame(frame);
 
   /* Para depurar desde la consola: window.__jardin */
-  window.__jardin = { S: S, garden: garden };
+  window.__jardin = { S: S, garden: garden, W: W, cam: function () { return camAt(S.t); } };
 })();

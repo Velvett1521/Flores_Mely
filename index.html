@@ -15,11 +15,17 @@
 <body>
 
 <main class="stage" id="stage">
-  <div class="sky" aria-hidden="true"></div>
+  <div class="sky" id="sky" aria-hidden="true"></div>
   <div class="stars" id="stars" aria-hidden="true"></div>
   <div class="glow" aria-hidden="true"></div>
   <canvas class="garden" id="garden" aria-hidden="true"></canvas>
 
+  <!-- Mundo que se desplaza solo: textos y fotos suben como créditos -->
+  <div class="worldwrap" id="worldwrap" aria-hidden="false">
+    <div class="world" id="world"></div>
+  </div>
+
+  <!-- Fotos del final (las que se pueden arrastrar) -->
   <div class="photos" id="photos"></div>
 
   <section class="textzone" id="textzone" aria-live="polite" aria-atomic="true"></section>
